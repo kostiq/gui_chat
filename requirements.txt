@@ -1,0 +1,7 @@
+aiofiles==0.6.0
+anyio==2.0.2
+async-timeout==3.0.1
+ConfigArgParse==1.2.3
+idna==2.10
+sniffio==1.2.0
+typing-extensions==3.7.4.3
