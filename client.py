@@ -13,6 +13,8 @@ from async_timeout import timeout
 import gui
 from utils import open_connection, sanitize, get_run_params, load_chat
 
+watchdog_logger = logging.getLogger('watchdog_logger')
+
 
 class WrongToken(Exception):
     pass
@@ -86,21 +88,21 @@ async def send_msgs(host, port, user, token, queue, status_queue, watchdog_queue
         watchdog_queue.put_nowait('Authorization done')
 
         json_response = json.loads(authorise_response.decode())
-        if json_response:
-            nickname = json_response["nickname"]
-            event = gui.NicknameReceived(nickname)
-            status_queue.put_nowait(event)
-
-            logging.debug(f'Выполнена авторизация. Пользователь {nickname}')
-
-            while True:
-                msg = await queue.get()
-                logging.debug(f'Пользователь ввел {msg}')
-                await submit_message(writer, msg)
-                watchdog_queue.put_nowait('Message sent')
-        else:
+        if not json_response:
             messagebox.showinfo("Неверный токен", "Проверь токен, сервер не узнал его.")
             raise WrongToken()
+
+        nickname = json_response["nickname"]
+        event = gui.NicknameReceived(nickname)
+        status_queue.put_nowait(event)
+
+        logging.debug(f'Выполнена авторизация. Пользователь {nickname}')
+
+        while True:
+            msg = await queue.get()
+            logging.debug(f'Пользователь ввел {msg}')
+            await submit_message(writer, msg)
+            watchdog_queue.put_nowait('Message sent')
 
 
 async def save_messages(filepath, queue):
@@ -110,14 +112,14 @@ async def save_messages(filepath, queue):
             await f.write(msg)
 
 
-async def watch_for_connection(logger, watchdog_queue):
+async def watch_for_connection(watchdog_queue):
     while True:
         try:
             with timeout(2):
                 msg = await watchdog_queue.get()
-                logger.info(f'[{time()}] Connection is alive. Source: {msg}')
+                watchdog_logger.info(f'[{time()}] Connection is alive. Source: {msg}')
         except asyncio.TimeoutError:
-            logger.info(f'[{time()}] 2s timeout is elapsed')
+            watchdog_logger.info(f'[{time()}] 2s timeout is elapsed')
             raise ConnectionError
 
 
@@ -129,8 +131,7 @@ async def server_ping(host, port, watchdog_queue):
         await asyncio.sleep(1)
 
 
-async def handle_connection(args, messages_queue, log_queue, status_updates_queue, watchdog_queue, sending_queue,
-                            watchdog_logger):
+async def handle_connection(args, messages_queue, log_queue, status_updates_queue, watchdog_queue, sending_queue):
     while True:
         try:
             async with create_task_group() as tg:
@@ -141,14 +142,13 @@ async def handle_connection(args, messages_queue, log_queue, status_updates_queu
                                args.host, args.write_port, args.username, args.token,
                                sending_queue, status_updates_queue, watchdog_queue)
                 await tg.spawn(server_ping, args.host, args.write_port, watchdog_queue)
-                await tg.spawn(watch_for_connection, watchdog_logger, watchdog_queue)
+                await tg.spawn(watch_for_connection, watchdog_queue)
         except (ConnectionError, socket.gaierror) as e:
             watchdog_logger.error('Reconnecting to server')
             await asyncio.sleep(1)
 
 
 async def main():
-    watchdog_logger = logging.getLogger('watchdog_logger')
     args = get_run_params()
     messages_queue = asyncio.Queue()
     sending_queue = asyncio.Queue()
@@ -162,7 +162,7 @@ async def main():
         await tg.spawn(handle_connection,
                        args,
                        messages_queue, log_queue, status_updates_queue,
-                       watchdog_queue, sending_queue, watchdog_logger),
+                       watchdog_queue, sending_queue),
         await tg.spawn(save_messages, args.history, log_queue),
         await tg.spawn(gui.draw, messages_queue, sending_queue, status_updates_queue),
 
